@@ -1,0 +1,43 @@
+# --- Secrets / local-only ---------------------------------------------------
+# run.sh contains plaintext credentials
+run.sh
+.env
+.env.local
+*.key
+*.pem
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual envs -----------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- IDE / OS ---------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# --- App-local data ---------------------------------------------------------
+*.log
+*.sqlite3
+
+# --- Claude Code local state ------------------------------------------------
+.claude/

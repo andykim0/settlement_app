@@ -1,0 +1,43 @@
+# docker-compose.yml — local dev stack for settlement_app
+# Bring up:   docker compose up -d
+# Tear down:  docker compose down          (data persists in named volumes)
+#             docker compose down -v       (also deletes volumes — data lost)
+#
+# SECURITY NOTE: the postgres password "dev" is a local-dev-only literal.
+# Production must use the SETTLEMENT_DB_PASSWORD env var instead.
+# See REVIEW.md § "Docker stack" for full details.
+
+services:
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: delivery_shared
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev
+    volumes:
+      - settlement_pg_data:/var/lib/postgresql/data
+      # Init scripts run on first container start (or after `down -v`).
+      # 00-init.sh creates delivery_rider and loads both schemas.
+      - ./infrastructure/db/init:/docker-entrypoint-initdb.d:ro
+      - ./infrastructure/db/sql:/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d delivery_shared"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  settlement_pg_data:
