@@ -1,10 +1,10 @@
 # settlement_app — settlement manager for delivery-rider branches
 
-A desktop tool that automates the daily settlement cycle of Korean food-delivery branches (Baemin, Coupang Eats): log in to each platform, pull the day's Excel reports, and settle every rider's pay with tax and insurance deductions — work that branch staff otherwise do by hand in spreadsheets every morning.
+A desktop tool for the daily settlement cycle of Korean food-delivery branches (Baemin, Coupang Eats). Today it automates the painful front half — logging in to each platform through its OTP gate and pulling the day's Excel reports, with live run monitoring. The back half — per-rider settlement with tax and insurance deductions, and persistence to PostgreSQL — is specified (schema, use cases, DTOs) but not implemented yet.
 
-**Stack:** Python 3.11 · PySide6 · Playwright · PostgreSQL 16 · psycopg 3 · pytest
+**Stack:** Python 3.11 · PySide6 · Playwright · pytest — PostgreSQL 16 / psycopg 3 for the planned persistence layer (Docker stack included; no consumer in the app yet)
 
-> Status: the scraping / download pipeline and run monitoring are wired end to end. Parts of the settlement math and several dashboard bindings are still stubs — see [`WIRING.md`](WIRING.md) for the exact per-widget status. This is a working prototype, not a finished product.
+> Status, honestly: scraping, Excel download, and the run registry / Monitoring page are real. `RunSettlementUseCase` raises `NotImplementedError`, `infrastructure/repositories/` is empty, and nothing calls the database pool yet. [`WIRING.md`](WIRING.md) lists every widget as live / partial / stub. Built as a focused sprint and imported in one commit; `WIRING.md` and `REVIEW.md` are the record of what was decided when.
 
 ---
 
@@ -17,7 +17,7 @@ Each branch manages dozens of riders across two platforms. Every day someone has
 3. Compute each rider's pay: platform fees, withholding tax, insurance, installments, deferrals.
 4. Send the statements out and keep an audit trail.
 
-There is no official API for any of this. The tool drives the portals with a real browser, relays the OTP codes automatically, and turns the spreadsheets into per-rider statements backed by a real database.
+There is no official API for any of this. The tool drives the portals with a real browser and relays the OTP codes automatically. Turning the spreadsheets into per-rider statements is the next milestone.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Layered, dependency-inward. The UI never touches a scraper or a database directl
 ```
 
 - **Scrapers** (`infrastructure/scrapers/`) use Playwright. Coupang's e-mail OTP is read through IMAP (`coupang_imap_otp.py`); SMS OTPs arrive through a small relay (`server/sms_otp_waiter.py`). Each platform has a `*_core` (login + navigation) and an extractor for its Excel layout.
-- **Workers** run scrapers off the UI thread on `QThreadPool`; a `RunRegistry` tracks every run's `RunState` and pushes updates to the pages through Qt signals, so the Monitoring page is live without polling.
+- **Workers** run scrapers off the UI thread on `QThreadPool`. `RunRegistry` (`application/services/run_registry.py`) is the piece with the most engineering in it: a thread-safe run state machine that emits Qt signals (`run_added`, `run_status_changed`, `run_log_appended`, `run_progress_updated`) so the Monitoring page updates live without polling. It is also the best-tested module in the repo (`tests/unit/test_run_registry.py`).
 - **Use cases** are the only entry points the UI calls; services and repositories sit behind them, so a scraper or database can be swapped without touching a page.
 
 ## Data model
@@ -64,10 +64,10 @@ PostgreSQL 16, two databases on one cluster (mirroring the target Aurora layout)
 Conventions that matter:
 
 - **Money is `numeric(14,2)` in SQL and `Decimal` in Python. Never `float`.**
-- **Credentials are encrypted at rest** — `(ciphertext bytea, iv bytea)` column pairs under AES-256-GCM with a fresh 12-byte IV per encryption; the key never lives in the database, only an alias resolved from the environment / KMS.
+- **Credential columns are specified as AES-256-GCM** — `(ciphertext bytea, iv bytea)` pairs with a fresh 12-byte IV per encryption and an `encryption_key_alias` that resolves to a key in the environment / KMS, never in the database. This is a schema contract today; the Python encrypt / decrypt path is not written yet (the SQL comments were written against a Java `Cipher` API, so the client side needs its own implementation).
 - **Soft delete everywhere** — `deleted_at timestamptz`; reads filter `WHERE deleted_at IS NULL`.
-- **Cross-database references are logical**, not foreign keys; integrity is enforced in code.
-- Local secrets (portal logins, IMAP) go through the OS keyring, not config files.
+- **Cross-database references are logical**, not foreign keys — `delivery_rider` and `delivery_shared` may be split across services later, so integrity between them is enforced in code on purpose.
+- Coupang's portal and IMAP passwords come from the OS keyring; the Baemin password is still read from a plain environment variable (`baemin_scraper.py`) — the next thing to close.
 
 ## Design decisions
 
@@ -77,8 +77,8 @@ Conventions that matter:
 | Playwright over reverse-engineered HTTP | No official APIs; the portals change often and gate every login behind OTP. Driving the real UI plus OTP relays is more robust than replaying requests. |
 | Layered architecture for a "small" tool | The scrapers are the most fragile part of the system. Isolating them behind a `ScraperProtocol` means a portal change is a one-module fix. |
 | `Decimal` + `numeric(14,2)` | Settlement is money that gets paid out. Rounding drift is not acceptable. |
-| AES-GCM with per-row IV and external key alias | Portal passwords must be stored to automate login, so they are encrypted with an AEAD cipher and the key is rotatable without touching rows. |
-| Two databases on one cluster | Matches the production Aurora shape so the local Docker stack and production share one schema. |
+| AES-GCM (specified) with per-row IV and external key alias | Portal passwords have to be stored to automate login; an AEAD cipher plus an external key alias means the key can rotate without rewriting rows. |
+| Two databases on one cluster, no cross-database FKs | Mirrors the target Aurora layout so the local Docker stack and production share one schema, and leaves room to split the rider database into its own service. |
 
 ## Run it
 
@@ -87,10 +87,10 @@ docker compose up -d                  # PostgreSQL 16 + Adminer (localhost:8080)
 pip install -e ".[dev,db]"
 playwright install chromium
 settlement-app                        # launches the PySide6 UI
-pytest                                # unit + integration tests
+pytest                                # 20 unit tests (run registry state machine, settings resolution)
 ```
 
-Environment variables for portal accounts and the OTP relay are read by `infrastructure/settings/app_settings.py`; nothing is hard-coded.
+Portal accounts and the OTP relay are configured through `infrastructure/settings/app_settings.py` (environment variables + keyring). The Docker stack uses a local-only `dev` password fallback for `localhost`; any other host requires the password environment variable.
 
 ## Repository layout
 
